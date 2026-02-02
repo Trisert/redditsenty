@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentiment Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #282828;
+            --bg-soft: #32302f;
+            --bg-muted: #3c3836;
+            --fg: #ebdbb2;
+            --fg-muted: #a89984;
+            --red: #cc241d;
+            --green: #98971a;
+            --yellow: #d79921;
+            --blue: #458588;
+            --purple: #b16286;
+            --aqua: #689d6a;
+            --orange: #d65d0e;
+            --gray: #928374;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'SF Mono', Monaco, Inconsolata, monospace;
+            background: var(--bg);
+            color: var(--fg);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+
+        header {
+            border-bottom: 1px solid var(--bg-muted);
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        h1 { font-size: 1.25rem; font-weight: 400; }
+        .status { font-size: 0.75rem; color: var(--fg-muted); }
+
+        /* Search Bar */
+        .search-section {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .search-form {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .search-input {
+            flex: 1;
+            min-width: 200px;
+            background: var(--bg);
+            color: var(--fg);
+            border: 1px solid var(--bg-muted);
+            padding: 0.5rem 0.75rem;
+            font-family: inherit;
+            font-size: 0.875rem;
+        }
+
+        .search-input:focus { outline: none; border-color: var(--blue); }
+
+        select, button, .search-input {
+            background: var(--bg);
+            color: var(--fg);
+            border: 1px solid var(--bg-muted);
+            padding: 0.5rem 0.75rem;
+            font-family: inherit;
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+
+        /* Analysis Section */
+        .analysis-section {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .analysis-section.active { display: block; }
+
+        .analysis-summary {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--bg-muted);
+        }
+
+        .sentiment-bar {
+            display: flex;
+            height: 24px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .bar-positive { background: var(--green); }
+        .bar-neutral { background: var(--gray); }
+        .bar-negative { background: var(--red); }
+
+        .tone-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+        }
+
+        .streaming-status { color: var(--yellow); }
+        .streaming-cursor {
+            animation: blink 1s infinite;
+            color: var(--aqua);
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .tone-positive { background: var(--green); color: var(--bg); }
+        .tone-negative { background: var(--red); color: var(--bg); }
+        .tone-neutral { background: var(--gray); color: var(--bg); }
+
+        .citations-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+
+        .citation-card {
+            background: var(--bg);
+            border: 1px solid var(--bg-muted);
+            padding: 0.75rem;
+            font-size: 0.8rem;
+        }
+
+        .citation-card.positive { border-left: 3px solid var(--green); }
+        .citation-card.negative { border-left: 3px solid var(--red); }
+        .citation-card.neutral { border-left: 3px solid var(--gray); }
+
+        .citation-title {
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--fg);
+        }
+
+        .citation-meta {
+            color: var(--fg-muted);
+            font-size: 0.75rem;
+        }
+
+        select:hover, button:hover { border-color: var(--fg-muted); }
+
+        button { background: var(--blue); border-color: var(--blue); }
+        button:hover { background: var(--aqua); border-color: var(--aqua); }
+
+        .search-results-info {
+            margin-top: 0.75rem;
+            font-size: 0.8rem;
+            color: var(--fg-muted);
+            display: none;
+        }
+
+        .search-results-info span { margin-right: 1rem; }
+
+        /* Subreddit Tabs */
+        .subreddit-tabs {
+            display: flex;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            background: var(--bg);
+            border: 1px solid var(--bg-muted);
+            padding: 0.35rem 0.6rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+
+        .tab:hover { border-color: var(--fg-muted); }
+        .tab.active { background: var(--blue); border-color: var(--blue); }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        select { display: none; }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+            padding: 1rem;
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: var(--fg-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value { font-size: 1.5rem; margin-top: 0.25rem; }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .neutral { color: var(--gray); }
+
+        /* Charts */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .chart-card {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+            padding: 1rem;
+        }
+
+        .chart-title {
+            font-size: 0.75rem;
+            color: var(--fg-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.75rem;
+        }
+
+        .chart-container { height: 200px; }
+
+        /* Posts Table */
+        .posts-section {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+        }
+
+        .posts-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--bg-muted);
+            font-size: 0.75rem;
+            color: var(--fg-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+        
+        th, td {
+            padding: 0.5rem 1rem;
+            text-align: left;
+            font-size: 0.8rem;
+            border-bottom: 1px solid var(--bg-muted);
+        }
+
+        th { color: var(--fg-muted); font-weight: 400; }
+        tr:last-child td { border-bottom: none; }
+
+        a { color: var(--blue); text-decoration: none; }
+        a:hover { color: var(--aqua); }
+
+        .sentiment-badge {
+            display: inline-block;
+            padding: 0.15rem 0.4rem;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .loading, .error, .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: var(--fg-muted);
+        }
+
+        .error { background: var(--red); color: var(--bg); display: none; }
+        .error.active { display: block; }
+        .loading.active { display: block; }
+        .empty-state { padding: 3rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-top">
+                <h1>Reddit Sentiment Analysis</h1>
+                <div class="status" id="lastUpdated">Last updated: Never</div>
+            </div>
+            
+            <!-- Search Section -->
+            <div class="search-section">
+                <form class="search-form" id="searchForm">
+                    <input type="text" class="search-input" id="searchInput" 
+                           placeholder="Search topics (e.g., llama, ollama, transformer)...">
+                    <select id="searchSubreddits">
+                        <option value="">All subreddits</option>
+                    </select>
+                    <select id="searchSentiment">
+                        <option value="">All sentiment</option>
+                        <option value="positive">Positive</option>
+                        <option value="neutral">Neutral</option>
+                        <option value="negative">Negative</option>
+                    </select>
+                    <button type="submit">Search</button>
+                </form>
+                <div class="search-results-info" id="searchInfo">
+                    <span id="searchQuery"></span>
+                    <span id="searchTotal"></span>
+                    <span class="positive" id="searchPositive"></span>
+                    <span class="neutral" id="searchNeutral"></span>
+                    <span class="negative" id="searchNegative"></span>
+                </div>
+
+                <!-- Analysis Section -->
+                <div class="analysis-section" id="analysisSection">
+                    <div id="analysisTone" class="tone-badge"></div>
+                    <div class="sentiment-bar" id="sentimentBar"></div>
+                    <div class="analysis-summary" id="analysisSummary"></div>
+                    <div class="citations-grid" id="citationsGrid"></div>
+                </div>
+            </div>
+
+            <!-- Subreddit Tabs -->
+            <div class="subreddit-tabs" id="subredditTabs">
+                <button class="tab active" data-sub="all">All</button>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+                <select id="subredditSelect">
+                    <option value="LocalLLaMA">r/LocalLLaMA</option>
+                </select>
+                <select id="dateRange">
+                    <option value="7">Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+                <button id="refreshBtn">Refresh</button>
+            </div>
+        </header>
+
+        <div class="error" id="errorMessage">
+            <strong>Error:</strong> <span id="errorText"></span>
+        </div>
+
+        <div class="loading" id="loadingMessage">Loading...</div>
+
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Posts</div>
+                <div class="stat-value" id="totalPosts">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Positive</div>
+                <div class="stat-value positive" id="positiveCount">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Neutral</div>
+                <div class="stat-value neutral" id="neutralCount">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Negative</div>
+                <div class="stat-value negative" id="negativeCount">-</div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">Sentiment Distribution</div>
+                <div class="chart-container"><canvas id="sentimentChart"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Sentiment Over Time</div>
+                <div class="chart-container"><canvas id="timelineChart"></canvas></div>
+            </div>
+        </div>
+
+        <!-- Posts -->
+        <div class="posts-section">
+            <div class="posts-header" id="postsHeader">Recent Posts</div>
+            <div id="postsContent">
+                <div class="empty-state">No data available</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js?v=2"></script>
+</body>
+</html>

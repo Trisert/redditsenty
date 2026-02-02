@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+    <style>
+        body { font-family: monospace; background: #282828; color: #ebdbb2; padding: 20px; }
+        .error { color: #cc241d; }
+        .success { color: #98971a; }
+        pre { background: #3c3836; padding: 10px; overflow: auto; }
+    </style>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <div id="status">Testing...</div>
+    <div id="results"></div>
+    
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        async function testAPI() {
+            const statusDiv = document.getElementById('status');
+            const resultsDiv = document.getElementById('results');
+            
+            try {
+                console.log('Testing API connection...');
+                statusDiv.textContent = 'Fetching posts...';
+                
+                const response = await fetch(`${API_BASE_URL}/api/posts?subreddit=LocalLLaMA&limit=3`);
+                
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('Data received:', data);
+                
+                statusDiv.innerHTML = '<span class="success">✓ API connection successful!</span>';
+                resultsDiv.innerHTML = '<h2>Response:</h2><pre>' + JSON.stringify(data.slice(0, 2), null, 2) + '</pre>';
+                
+            } catch (error) {
+                console.error('Error:', error);
+                statusDiv.innerHTML = '<span class="error">✗ Error: ' + error.message + '</span>';
+                resultsDiv.innerHTML = '<h2>Error Details:</h2><pre>' + error.stack + '</pre>';
+            }
+        }
+        
+        // Test immediately and after a delay
+        testAPI();
+        setTimeout(testAPI, 2000);
+    </script>
+</body>
+</html>

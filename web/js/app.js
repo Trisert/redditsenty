@@ -424,18 +424,19 @@ function updatePostsTable(posts) {
 
     const sortedPosts = [...posts].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 25);
     
-    let html = '<table><thead><tr><th>Title</th><th>Subreddit</th><th>Score</th><th>Sentiment</th><th>Date</th></tr></thead><tbody>';
-    
+    let html = '<table><thead><tr><th>Title</th><th>Subreddit</th><th>Score</th><th>Sentiment</th><th>Date</th><th></th></tr></thead><tbody>';
+
     sortedPosts.forEach(post => {
         const sentimentClass = getSentimentClass(post.sentiment);
         const date = new Date(post.created_utc).toLocaleDateString();
-        
+
         html += `<tr>
             <td><a href="${post.permalink}" target="_blank">${escapeHtml(post.title)}</a></td>
             <td>r/${post.subreddit}</td>
             <td>${post.score || 0}</td>
             <td><span class="sentiment-badge ${sentimentClass}">${post.sentiment || '-'}</span></td>
             <td>${date}</td>
+            <td><button class="comments-btn" onclick="showComments('${post.id}', '${escapeHtml(post.title).replace(/'/g, "\\'")}')">Comments</button></td>
         </tr>`;
     });
     
@@ -481,4 +482,83 @@ function resetSearchUI() {
 
 function updateLastUpdated() {
     document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+}
+
+async function showComments(postId, postTitle) {
+    const section = document.getElementById('commentsSection');
+    const titleEl = document.getElementById('commentsTitle');
+    const statsEl = document.getElementById('commentsStats');
+    const listEl = document.getElementById('commentsList');
+
+    section.style.display = 'block';
+    titleEl.textContent = `Comments: ${postTitle.slice(0, 50)}...`;
+    listEl.innerHTML = '<div class="loading">Loading comments...</div>';
+
+    try {
+        const [statsRes, commentsRes] = await Promise.all([
+            fetch(`${API_BASE_URL}/api/posts/${postId}/comments/stats`),
+            fetch(`${API_BASE_URL}/api/posts/${postId}/comments?tree=true&limit=10`)
+        ]);
+
+        if (!statsRes.ok || !commentsRes.ok) {
+            throw new Error('Failed to fetch comments');
+        }
+
+        const stats = await statsRes.json();
+        const data = await commentsRes.json();
+
+        // Show stats
+        statsEl.innerHTML = `
+            <div class="stat"><span class="stat-value positive">${stats.positive}</span> positive</div>
+            <div class="stat"><span class="stat-value neutral">${stats.neutral}</span> neutral</div>
+            <div class="stat"><span class="stat-value negative">${stats.negative}</span> negative</div>
+            <div class="stat"><span class="stat-value">${stats.total}</span> total</div>
+        `;
+
+        // Render comments
+        listEl.innerHTML = '';
+        renderCommentTree(data.comments, listEl);
+
+        // Scroll to comments
+        section.scrollIntoView({ behavior: 'smooth' });
+
+    } catch (error) {
+        console.error('Comments error:', error);
+        listEl.innerHTML = `<div class="error">Failed to load comments: ${error.message}</div>`;
+    }
+}
+
+function renderCommentTree(comments, container) {
+    comments.forEach(comment => {
+        const item = document.createElement('div');
+        item.className = `comment-item comment-depth-${Math.min(comment.depth, 3)}`;
+
+        const sentimentClass = comment.sentiment ? `sentiment-${comment.sentiment}` : '';
+        const sentimentBadge = comment.sentiment ?
+            `<span class="sentiment-badge ${sentimentClass}">${comment.sentiment}</span>` : '';
+
+        item.innerHTML = `
+            <div class="comment-body">${escapeHtml(comment.body)}</div>
+            <div class="comment-meta">
+                <span>${comment.author}</span>
+                <span>${comment.score} pts</span>
+                <span>${new Date(comment.created_utc).toLocaleDateString()}</span>
+                ${sentimentBadge}
+            </div>
+        `;
+
+        container.appendChild(item);
+
+        // Render replies
+        if (comment.replies && comment.replies.length > 0) {
+            const repliesContainer = document.createElement('div');
+            repliesContainer.className = 'comment-replies';
+            renderCommentTree(comment.replies, repliesContainer);
+            container.appendChild(repliesContainer);
+        }
+    });
+}
+
+function closeComments() {
+    document.getElementById('commentsSection').style.display = 'none';
 }

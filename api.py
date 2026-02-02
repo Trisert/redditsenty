@@ -28,11 +28,15 @@ def adapt_datetime(dt):
 
 
 def convert_datetime(val):
-    return datetime.fromisoformat(val.decode() if isinstance(val, bytes) else val)
+    try:
+        return datetime.fromisoformat(val.decode() if isinstance(val, bytes) else val)
+    except (ValueError, AttributeError):
+        return datetime.now()
 
 
 sqlite3.register_adapter(datetime, adapt_datetime)
 sqlite3.register_converter("DATETIME", convert_datetime)
+sqlite3.register_converter("TIMESTAMP", convert_datetime)
 sqlite3.register_adapter(date, lambda d: d.isoformat())
 sqlite3.register_converter(
     "DATE", lambda val: date.fromisoformat(val.decode() if isinstance(val, bytes) else val)
@@ -111,6 +115,22 @@ class Citation(BaseModel):
     sentiment: str
     score: int
     url: str
+
+
+class Comment(BaseModel):
+    id: str
+    post_id: str
+    parent_id: Optional[str] = None
+    body: str
+    author: str
+    score: int
+    created_utc: datetime
+    permalink: str
+    depth: int = 0
+    sentiment: Optional[str] = None
+    sentiment_score: Optional[float] = None
+    analyzed_at: Optional[datetime] = None
+    replies: List["Comment"] = []
 
 
 class SentimentSummary(BaseModel):
@@ -225,6 +245,40 @@ def init_db():
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_sentiment ON posts(sentiment)
+    """)
+
+    # Comments table for recursive comment analysis
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS comments (
+            id TEXT PRIMARY KEY,
+            post_id TEXT NOT NULL,
+            parent_id TEXT,
+            body TEXT,
+            author TEXT,
+            score INTEGER,
+            created_utc TIMESTAMP,
+            permalink TEXT,
+            depth INTEGER DEFAULT 0,
+            sentiment TEXT,
+            sentiment_score REAL,
+            analyzed_at TIMESTAMP,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Comments indexes
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_depth ON comments(depth)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_sentiment ON comments(sentiment)
     """)
 
     conn.commit()
@@ -346,6 +400,360 @@ Score: [number]"""
         return None, None
 
 
+async def analyze_comment_sentiment(text: str) -> tuple:
+    """Analyze sentiment of a comment (shorter prompt for speed)"""
+    if not text or text.strip() == "[removed]":
+        return None, None
+
+    prompt = f"""Rate Reddit comment sentiment: POSITIVE, NEGATIVE, or NEUTRAL.
+Score: -1.0 to +1.0.
+
+Comment: {text[:300]}
+
+Respond: Sentiment: [P/N/NEU], Score: [number]"""
+
+    payload = {
+        "prompt": prompt,
+        "temperature": 0.1,
+        "max_tokens": 20,
+        "stop": ["\n\n"],
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{LLAMA_SERVER_URL}/completion",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status != 200:
+                    return None, None
+
+                result = await response.json()
+                completion = result.get("content", "")
+
+                sentiment = "neutral"
+                score = 0.0
+
+                if "POSITIVE" in completion.upper() or completion.upper().startswith("P"):
+                    sentiment = "positive"
+                    score = 0.5
+                elif "NEGATIVE" in completion.upper() or completion.upper().startswith("N"):
+                    sentiment = "negative"
+                    score = -0.5
+                elif "NEU" in completion.upper():
+                    sentiment = "neutral"
+                    score = 0.0
+
+                match = re.search(r"[-+]?\d*\.?\d+", completion)
+                if match:
+                    try:
+                        s = float(match.group())
+                        if -1.0 <= s <= 1.0:
+                            score = s
+                    except:
+                        pass
+
+                return sentiment, score
+
+    except Exception as e:
+        print(f"Comment sentiment error: {e}")
+        return None, None
+
+
+def store_comment(comment: dict, post_id: str, parent_id: Optional[str] = None, depth: int = 0):
+    """Store a comment in the database"""
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO comments
+            (id, post_id, parent_id, body, author, score, created_utc, permalink, depth)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                comment["id"],
+                post_id,
+                parent_id,
+                comment.get("body", ""),
+                comment.get("author", "[deleted]"),
+                comment.get("score", 0),
+                datetime.fromtimestamp(comment.get("created_utc", 0)),
+                f"https://reddit.com{comment.get('permalink', '')}",
+                depth,
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error storing comment: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def parse_comment_data(
+    data: dict, post_id: str, parent_id: Optional[str] = None, depth: int = 0
+) -> List[dict]:
+    """Recursively parse Reddit comment data into flat list"""
+    comments = []
+
+    # Skip placeholder/removed comments
+    if data.get("kind") == "t1" and data.get("data"):
+        comment_data = data["data"]
+
+        # Skip deleted/removed comments
+        body = comment_data.get("body", "")
+        if body and body not in ["[removed]", "[deleted]"]:
+            comment_info = {
+                "id": comment_data["id"],
+                "post_id": post_id,
+                "parent_id": parent_id,
+                "body": body,
+                "author": comment_data.get("author", "[deleted]"),
+                "score": comment_data.get("score", 0),
+                "created_utc": comment_data.get("created_utc", 0),
+                "permalink": comment_data.get("permalink", ""),
+                "depth": depth,
+            }
+            comments.append(comment_info)
+
+        # Process replies recursively
+        replies = comment_data.get("replies", "")
+        if replies and isinstance(replies, str):
+            # Reddit returns "1.0" or empty string if no replies
+            pass
+        elif replies and isinstance(replies, dict):
+            for reply in replies.get("data", {}).get("children", []):
+                comments.extend(parse_comment_data(reply, post_id, comment_data["id"], depth + 1))
+
+    return comments
+
+
+async def fetch_comments_for_post(
+    post: dict, max_depth: int = 2, max_comments: int = 100
+) -> List[dict]:
+    """Fetch and parse comments for a post recursively"""
+    post_id = post.get("id", "")
+    subreddit = post.get("subreddit", "")
+
+    url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.json"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers={"User-Agent": "reddit-sentiment-bot"}) as response:
+                if response.status != 200:
+                    print(f"Failed to fetch comments for {post_id}: {response.status}")
+                    return []
+
+                data = await response.json()
+
+                # Comments are in the second element (first is the post)
+                comments_data = data[1].get("data", {}).get("children", []) if len(data) > 1 else []
+
+                all_comments = []
+                for comment_data in comments_data[:max_comments]:
+                    parsed = parse_comment_data(comment_data, post_id, depth=0)
+                    all_comments.extend(parsed)
+
+                return all_comments
+
+    except Exception as e:
+        print(f"Error fetching comments for {post_id}: {e}")
+        return []
+
+
+async def analyze_and_store_comments(post: dict, max_depth: int = 2, max_comments: int = 50) -> int:
+    """Fetch, analyze, and store comments for a post"""
+    comments = await fetch_comments_for_post(post, max_depth, max_comments)
+
+    if not comments:
+        return 0
+
+    analyzed = 0
+    for comment in comments[:max_comments]:
+        # Analyze sentiment
+        sentiment, score = await analyze_comment_sentiment(comment["body"])
+
+        # Store in database
+        conn = sqlite3.connect(
+            DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+        )
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO comments
+                (id, post_id, parent_id, body, author, score, created_utc, permalink, depth,
+                 sentiment, sentiment_score, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    comment["id"],
+                    comment["post_id"],
+                    comment.get("parent_id"),
+                    comment["body"],
+                    comment["author"],
+                    comment["score"],
+                    datetime.fromtimestamp(comment["created_utc"]),
+                    comment["permalink"],
+                    comment["depth"],
+                    sentiment,
+                    score,
+                    datetime.now() if sentiment else None,
+                ),
+            )
+            conn.commit()
+            analyzed += 1
+        except Exception as e:
+            print(f"Error storing comment {comment['id']}: {e}")
+        finally:
+            conn.close()
+
+    return analyzed
+
+
+def get_comments_for_post(post_id: str, limit: int = 50) -> List[Comment]:
+    """Get comments for a post from the database"""
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, post_id, parent_id, body, author, score, created_utc,
+               permalink, depth, sentiment, sentiment_score, analyzed_at
+        FROM comments
+        WHERE post_id = ?
+        ORDER BY score DESC
+        LIMIT ?
+    """,
+        (post_id, limit),
+    )
+
+    comments = []
+    for row in cursor.fetchall():
+        comments.append(
+            Comment(
+                id=row[0],
+                post_id=row[1],
+                parent_id=row[2],
+                body=row[3],
+                author=row[4],
+                score=row[5],
+                created_utc=row[6],
+                permalink=row[7],
+                depth=row[8],
+                sentiment=row[9],
+                sentiment_score=row[10],
+                analyzed_at=row[11],
+            )
+        )
+
+    conn.close()
+    return comments
+
+
+def get_comments_tree(post_id: str, max_depth: int = 3, max_per_level: int = 20) -> List[Comment]:
+    """Get comments organized as a tree structure"""
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, post_id, parent_id, body, author, score, created_utc,
+               permalink, depth, sentiment, sentiment_score, analyzed_at
+        FROM comments
+        WHERE post_id = ?
+        ORDER BY depth ASC, score DESC
+    """,
+        (post_id,),
+    )
+
+    all_comments = {}
+    root_comments = []
+
+    for row in cursor.fetchall():
+        comment = Comment(
+            id=row[0],
+            post_id=row[1],
+            parent_id=row[2],
+            body=row[3],
+            author=row[4],
+            score=row[5],
+            created_utc=row[6],
+            permalink=row[7],
+            depth=row[8],
+            sentiment=row[9],
+            sentiment_score=row[10],
+            analyzed_at=row[11],
+        )
+        all_comments[comment.id] = comment
+
+    # Build tree
+    for comment_id, comment in all_comments.items():
+        if comment.parent_id and comment.parent_id in all_comments:
+            all_comments[comment.parent_id].replies.append(comment)
+        else:
+            root_comments.append(comment)
+
+    # Sort replies by score
+    def sort_replies(c: Comment):
+        c.replies.sort(key=lambda x: x.score, reverse=True)
+        for reply in c.replies[:max_per_level]:
+            sort_replies(reply)
+
+    for comment in root_comments:
+        sort_replies(comment)
+
+    # Limit root comments
+    root_comments = root_comments[:max_per_level]
+
+    conn.close()
+    return root_comments
+
+
+def get_comment_stats(post_id: str) -> dict:
+    """Get comment sentiment statistics for a post"""
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
+            SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative,
+            SUM(CASE WHEN sentiment = 'neutral' OR sentiment IS NULL THEN 1 ELSE 0 END) as neutral,
+            AVG(CASE WHEN sentiment_score IS NOT NULL THEN sentiment_score ELSE 0 END) as avg_score
+        FROM comments
+        WHERE post_id = ?
+    """,
+        (post_id,),
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    total = row[0] or 0
+    positive = row[1] or 0
+    negative = row[2] or 0
+    neutral = row[3] or 0
+    avg_score = row[4] or 0.0
+
+    return {
+        "total": total,
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "avg_score": round(avg_score, 3),
+        "positive_percent": round(positive / total * 100, 1) if total > 0 else 0,
+        "negative_percent": round(negative / total * 100, 1) if total > 0 else 0,
+    }
+
+
 def store_post(post: dict, sentiment: Optional[str] = None, score: Optional[float] = None):
     """Store post in database"""
     conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
@@ -387,6 +795,8 @@ async def fetch_and_analyze_subreddit(subreddit: str) -> int:
     posts = fetch_reddit_posts(subreddit, MAX_POSTS_PER_FETCH)
 
     analyzed = 0
+    comments_analyzed = 0
+
     for post in posts:
         # Skip if already exists
         conn = sqlite3.connect(
@@ -406,10 +816,19 @@ async def fetch_and_analyze_subreddit(subreddit: str) -> int:
         store_post(post, sentiment, score)
         analyzed += 1
 
+        # Fetch and analyze comments for this post
+        try:
+            post_comments = await analyze_and_store_comments(post, max_depth=2, max_comments=25)
+            comments_analyzed += post_comments
+        except Exception as e:
+            print(f"  Error fetching comments for {post['id']}: {e}")
+
         # Rate limit
         await asyncio.sleep(0.5)
 
     print(f"  Analyzed {analyzed} new posts from r/{subreddit}")
+    if comments_analyzed > 0:
+        print(f"  Analyzed {comments_analyzed} comments")
     return analyzed
 
 
@@ -1197,6 +1616,79 @@ async def trigger_analysis(subreddit: str = "LocalLLaMA", limit: int = 25):
     """Manually trigger analysis for a subreddit"""
     analyzed = await fetch_and_analyze_subreddit(subreddit)
     return {"message": f"Analyzed {analyzed} posts", "subreddit": subreddit}
+
+
+@app.get("/api/posts/{post_id}/comments")
+async def get_post_comments(
+    post_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    tree: bool = False,
+):
+    """Get comments for a post. Use tree=true for nested structure."""
+    if tree:
+        comments = get_comments_tree(post_id, max_depth=3, max_per_level=limit)
+    else:
+        comments = get_comments_for_post(post_id, limit=limit)
+
+    return {
+        "post_id": post_id,
+        "count": len(comments),
+        "comments": comments,
+    }
+
+
+@app.get("/api/posts/{post_id}/comments/stats")
+async def get_comment_stats_endpoint(post_id: str):
+    """Get sentiment statistics for comments on a post"""
+    stats = get_comment_stats(post_id)
+    return {
+        "post_id": post_id,
+        "total": stats["total"],
+        "positive": stats["positive"],
+        "negative": stats["negative"],
+        "neutral": stats["neutral"],
+        "avg_score": stats["avg_score"],
+        "positive_percent": stats["positive_percent"],
+        "negative_percent": stats["negative_percent"],
+    }
+
+
+@app.post("/api/posts/{post_id}/comments/analyze")
+async def trigger_comment_analysis(
+    post_id: str,
+    max_comments: int = Query(50, ge=1, le=100),
+    max_depth: int = Query(2, ge=1, le=5),
+):
+    """Fetch and analyze comments for a post"""
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, title, subreddit FROM posts WHERE id = ?", (post_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    post = {"id": row[0], "title": row[1], "subreddit": row[2]}
+
+    analyzed = await analyze_and_store_comments(
+        post, max_depth=max_depth, max_comments=max_comments
+    )
+
+    stats = get_comment_stats(post_id)
+
+    return {
+        "message": f"Analyzed {analyzed} comments",
+        "post_id": post_id,
+        "total": stats["total"],
+        "positive": stats["positive"],
+        "negative": stats["negative"],
+        "neutral": stats["neutral"],
+        "avg_score": stats["avg_score"],
+        "positive_percent": stats["positive_percent"],
+        "negative_percent": stats["negative_percent"],
+    }
 
 
 if __name__ == "__main__":

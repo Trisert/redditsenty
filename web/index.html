@@ -287,6 +287,10 @@
             border-bottom: 1px solid var(--bg-muted);
         }
 
+        th:last-child, td:last-child { padding-right: 0.5rem; text-align: right; }
+
+        th:first-child, td:first-child { padding-left: 0.5rem; }
+
         th { color: var(--fg-muted); font-weight: 400; }
         tr:last-child td { border-bottom: none; }
 
@@ -310,6 +314,94 @@
         .error.active { display: block; }
         .loading.active { display: block; }
         .empty-state { padding: 3rem; }
+
+        .comments-btn {
+            background: var(--bg-muted);
+            border: none;
+            color: var(--fg);
+            padding: 0.25rem 0.5rem;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+
+        .comments-btn:hover { background: var(--gray); }
+
+        /* Comments Section */
+        .comments-section {
+            background: var(--bg-soft);
+            border: 1px solid var(--bg-muted);
+            margin-top: 1rem;
+        }
+
+        .comments-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--bg-muted);
+            font-size: 0.75rem;
+            color: var(--fg-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .close-btn {
+            background: var(--bg-muted);
+            border: none;
+            color: var(--fg);
+            padding: 0.25rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.7rem;
+        }
+
+        .close-btn:hover { background: var(--gray); }
+
+        .comments-stats {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--bg-muted);
+            display: flex;
+            gap: 1rem;
+            font-size: 0.8rem;
+        }
+
+        .comments-stats .stat { display: flex; gap: 0.25rem; }
+        .comments-stats .stat-value { font-weight: bold; }
+
+        .comments-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .comment-item {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--bg-muted);
+        }
+
+        .comment-item:last-child { border-bottom: none; }
+
+        .comment-body {
+            font-size: 0.85rem;
+            line-height: 1.5;
+            margin-bottom: 0.5rem;
+        }
+
+        .comment-meta {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.7rem;
+            color: var(--fg-muted);
+        }
+
+        .comment-replies {
+            margin-left: 1.5rem;
+            border-left: 2px solid var(--bg-muted);
+            padding-left: 0.5rem;
+        }
+
+        .comment-depth-0 { margin-left: 0; }
+        .comment-depth-1 { margin-left: 1rem; }
+        .comment-depth-2 { margin-left: 2rem; }
+        .comment-depth-3 { margin-left: 3rem; }
     </style>
 </head>
 <body>
@@ -416,6 +508,16 @@
             <div id="postsContent">
                 <div class="empty-state">No data available</div>
             </div>
+        </div>
+
+        <!-- Comments Section -->
+        <div class="comments-section" id="commentsSection" style="display: none;">
+            <div class="comments-header">
+                <span id="commentsTitle">Comments</span>
+                <button class="close-btn" onclick="closeComments()">Close</button>
+            </div>
+            <div class="comments-stats" id="commentsStats"></div>
+            <div class="comments-list" id="commentsList"></div>
         </div>
     </div>
 
